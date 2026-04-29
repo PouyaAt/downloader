@@ -1,68 +1,129 @@
-   import requests
-   import json
-   import re
-   import sys
+import requests
+import re
+import json
+import sys
+import time
 
-   HEADERS = {
-       "User-Agent": "Mozilla/5.0",
-       "Accept": "text/html,application/json"
-   }
-
-   def get_latest_post(username):
-       url = f"https://www.instagram.com/{username}/"
-
-       response = requests.get(url, headers=HEADERS)
-
-       if response.status_code != 200:
-           raise Exception("Failed to load profile")
-
-       html = response.text
-
-       match = re.search(r'window\._sharedData = (.*?);</script>', html)
-
-       if not match:
-           raise Exception("Could not find Instagram data")
-
-       data = json.loads(match.group(1))
-
-       user = data["entry_data"]["ProfilePage"][0]["graphql"]["user"]
-       posts = user["edge_owner_to_timeline_media"]["edges"]
-
-       if not posts:
-           raise Exception("No posts found")
-
-       latest = posts[0]["node"]
-
-       media_url = latest["display_url"]
-       shortcode = latest["shortcode"]
-
-       return media_url, shortcode
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/123.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,"
+              "image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 
-   def download_image(url, filename):
-       r = requests.get(url, headers=HEADERS)
-       r.raise_for_status()
-       with open(filename, "wb") as f:
-           f.write(r.content)
+def fetch(url):
+    """HTTP GET with retry support"""
+    for attempt in range(3):
+        response = requests.get(url, headers=HEADERS, timeout=30)
+        if response.status_code in (429, 500, 502, 503, 504):
+            wait = 2 * (attempt + 1)
+            print(f"Retrying in {wait}s due to {response.status_code}...")
+            time.sleep(wait)
+            continue
+        response.raise_for_status()
+        return response
+    response.raise_for_status()
 
 
-   def main():
-       if len(sys.argv) < 2:
-           print("Usage: python download.py USERNAME")
-           return
+def extract_json(html_text):
+    """Extract embedded JSON from Instagram page"""
+    # Old structure
+    match = re.search(
+        r'window\._sharedData\s*=\s*(\{.*?\});\s*</script>',
+        html_text,
+        re.DOTALL
+    )
+    if match:
+        return json.loads(match.group(1))
 
-       username = sys.argv[1]
+    # New Next.js structure
+    match = re.search(
+        r'<script type="application/json" id="__NEXT_DATA__">\s*(\{.*?\})\s*</script>',
+        html_text,
+        re.DOTALL
+    )
+    if match:
+        return json.loads(match.group(1))
 
-       print("Fetching latest post for:", username)
-
-       media_url, shortcode = get_latest_post(username)
-
-       filename = f"{username}_{shortcode}.jpg"
-
-       download_image(media_url, filename)
-
-       print("Downloaded:", filename)
+    raise Exception("Could not locate embedded JSON data.")
 
 
-   if __name__ == "__main__":
-       main()
+def get_latest_post(username):
+    url = f"https://www.instagram.com/{username}/"
+    print(f"Fetching profile: {url}")
+    response = fetch(url)
+    data = extract_json(response.text)
+
+    # Try classic format
+    user = (
+        data.get("entry_data", {})
+            .get("ProfilePage", [{}])[0]
+            .get("graphql", {})
+            .get("user")
+    )
+
+    # Try Next.js format fallback
+    if not user:
+        user = (
+            data.get("props", {})
+                .get("pageProps", {})
+                .get("profile", {})
+                .get("user")
+        )
+
+    if not user:
+        raise Exception("User data not found (private account or structure changed).")
+
+    edges = (
+        user.get("edge_owner_to_timeline_media", {}).get("edges")
+        or user.get("timeline_media", {}).get("edges")
+    )
+
+    if not edges:
+        raise Exception("No posts found.")
+
+    latest = edges[0]["node"]
+
+    # Only download images (skip videos/reels)
+    if latest.get("is_video"):
+        raise Exception("Latest post is a video. This script downloads images only.")
+
+    image_url = (
+        latest.get("display_url")
+        or latest.get("display_resources", [{}])[-1].get("src")
+    )
+
+    shortcode = latest.get("shortcode") or "latest"
+
+    if not image_url:
+        raise Exception("Could not extract image URL.")
+
+    return image_url, shortcode
+
+
+def save_image(image_url, shortcode):
+    print("Downloading image...")
+    img_data = fetch(image_url).content
+    filename = f"{shortcode}.jpg"
+    with open(filename, "wb") as f:
+        f.write(img_data)
+    print(f"Saved as {filename}")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print("Usage: python download.py <instagram_username>")
+        sys.exit(1)
+
+    username = sys.argv[1]
+
+    try:
+        image_url, shortcode = get_latest_post(username)
+        save_image(image_url, shortcode)
+        print("Download completed successfully ✅")
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)
