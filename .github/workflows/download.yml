@@ -1,0 +1,28 @@
+   name: Instagram Downloader
+
+   on:
+     workflow_dispatch:
+       inputs:
+         username:
+           description: "Instagram username"
+           required: true
+
+   jobs:
+     download:
+       runs-on: ubuntu-latest
+
+       steps:
+         - name: Checkout repo
+           uses: actions/checkout@v3
+
+         - name: Install dependencies
+           run: pip install requests
+
+         - name: Run downloader
+           run: python download.py "${{ github.event.inputs.username }}"
+
+         - name: Upload result
+           uses: actions/upload-artifact@v3
+           with:
+             name: instagram_post
+             path: "*.jpg"
