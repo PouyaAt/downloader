@@ -124,6 +124,10 @@ if __name__ == "__main__":
         image_url, shortcode = get_latest_post(username)
         save_image(image_url, shortcode)
         print("Download completed successfully ✅")
-    except Exception as e:
-        print(f"Error: {e}")
+
+    except Exception:
+        import traceback
+        print("ERROR OCCURRED:")
+        traceback.print_exc()
         sys.exit(1)
+
